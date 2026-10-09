@@ -1385,13 +1385,51 @@ func TestFinalizeAppDeletion(t *testing.T) {
 			patched = true
 			return true, &v1alpha1.Application{}, nil
 		})
-		err := ctrl.finalizeApplicationDeletion(t.Context(), app, func(_ string) ([]*v1alpha1.Cluster, error) {
+		err := ctrl.finalizeApplicationDeletion(app, func(_ string) ([]*v1alpha1.Cluster, error) {
 			return []*v1alpha1.Cluster{}, nil
 		})
 		require.NoError(t, err)
 		// The finalizer must still be in place, so the hook is not deleted by
 		// cascade deletion while it is still starting.
 		assert.False(t, patched, "post-delete finalizer must not be removed while a hook is unaccounted for")
+	})
+
+	t.Run("PreDelete_JobNotCachedWhilePassiveHookIsCached", func(t *testing.T) {
+		// A PreDelete hook set of a Job plus a ServiceAccount. The second pass sees
+		// the ServiceAccount in the cache, which has no health check and counts as
+		// Healthy, while the Job gets AlreadyExists. The phase must not complete.
+		app := newFakeApp()
+		app.SetPreDeleteFinalizer()
+		app.Spec.Destination.Namespace = test.FakeArgoCDNamespace
+		hookSA := test.YamlToUnstructured(`{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"pre-delete-hook","namespace":"default","annotations":{"argocd.argoproj.io/hook":"PreDelete"}}}`)
+		ctrl := newFakeController(t.Context(), &fakeData{
+			manifestResponses: []*apiclient.ManifestResponse{{
+				Manifests: []string{fakePreDeleteHook, `{"apiVersion":"v1","kind":"ServiceAccount","metadata":{"name":"pre-delete-hook","namespace":"default","annotations":{"argocd.argoproj.io/hook":"PreDelete"}}}`},
+			}},
+			apps:            []runtime.Object{app, &defaultProj},
+			managedLiveObjs: map[kube.ResourceKey]*unstructured.Unstructured{kube.GetResourceKey(hookSA): hookSA},
+		}, nil)
+		ctrl.kubectl.(*MockKubectl).CreateError = apierrors.NewAlreadyExists(schema.GroupResource{Resource: "pods"}, "pre-delete-hook")
+		existingHook := &unstructured.Unstructured{Object: newFakePreDeleteHook()}
+		require.NoError(t, setFakeAppInstance(t, ctrl, existingHook, app.InstanceName(test.FakeArgoCDNamespace)))
+		ctrl.kubectl.(*MockKubectl).GetResourceResult = existingHook
+
+		patched := false
+		fakeAppCs := ctrl.applicationClientset.(*appclientset.Clientset)
+		defaultReactor := fakeAppCs.ReactionChain[0]
+		fakeAppCs.ReactionChain = nil
+		fakeAppCs.AddReactor("get", "*", func(action kubetesting.Action) (handled bool, ret runtime.Object, err error) {
+			return defaultReactor.React(action)
+		})
+		fakeAppCs.AddReactor("patch", "*", func(_ kubetesting.Action) (handled bool, ret runtime.Object, err error) {
+			patched = true
+			return true, &v1alpha1.Application{}, nil
+		})
+		err := ctrl.finalizeApplicationDeletion(app, func(_ string) ([]*v1alpha1.Cluster, error) {
+			return []*v1alpha1.Cluster{}, nil
+		})
+		require.NoError(t, err)
+		assert.False(t, patched, "pre-delete finalizer must not be removed while the Job hook is not in the cache")
 	})
 
 	t.Run("PostDelete_HookNameTakenByAnotherAppDoesNotBlockDeletion", func(t *testing.T) {
@@ -1426,7 +1464,7 @@ func TestFinalizeAppDeletion(t *testing.T) {
 			patched = true
 			return true, &v1alpha1.Application{}, nil
 		})
-		err := ctrl.finalizeApplicationDeletion(t.Context(), app, func(_ string) ([]*v1alpha1.Cluster, error) {
+		err := ctrl.finalizeApplicationDeletion(app, func(_ string) ([]*v1alpha1.Cluster, error) {
 			return []*v1alpha1.Cluster{}, nil
 		})
 		require.NoError(t, err)
@@ -1494,7 +1532,7 @@ func TestFinalizeAppDeletion(t *testing.T) {
 					patched = true
 					return true, &v1alpha1.Application{}, nil
 				})
-				err := ctrl.finalizeApplicationDeletion(t.Context(), app, func(_ string) ([]*v1alpha1.Cluster, error) {
+				err := ctrl.finalizeApplicationDeletion(app, func(_ string) ([]*v1alpha1.Cluster, error) {
 					return []*v1alpha1.Cluster{}, nil
 				})
 				if tt.expectErr != "" {

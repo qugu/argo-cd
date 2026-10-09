@@ -195,7 +195,7 @@ func (ctrl *ApplicationController) executeHooks(hookType HookType, app *appv1.Ap
 				// If it belongs to another application or is untracked, this
 				// application will never see it in the cluster cache, so waiting
 				// would block deletion forever. Skip it, as before.
-				owned, ownErr := ctrl.isOwnedByApp(ctx, config, obj, app, appLabelKey, trackingMethod, installationID, resourceTracking)
+				owned, ownErr := ctrl.isOwnedByApp(context.Background(), config, obj, app, appLabelKey, trackingMethod, installationID, resourceTracking)
 				if ownErr != nil {
 					return false, fmt.Errorf("failed to check ownership of existing %s hook %s: %w", hookType, key, ownErr)
 				}
